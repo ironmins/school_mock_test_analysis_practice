@@ -1,863 +1,629 @@
-class MockExamAnalyzer {
-    constructor() {
-        this.filesData = new Map();
-        this.combinedData = null;
-        this.selectedFiles = null;
-        this.initializeEventListeners();
-    }
+/**
+ * 전주고 모의고사 성적분석 V13
+ * script.js
+ */
 
-    initializeEventListeners() {
-        const fileInput = document.getElementById('excelFiles');
-        const analyzeBtn = document.getElementById('analyzeBtn');
-        const exportCsvBtn = document.getElementById('exportCsvBtn');
-        const exportHtmlBtn = document.getElementById('exportHtmlBtn');
+// Chart.js 플러그인 등록
+Chart.register(ChartDataLabels);
+Chart.defaults.plugins.datalabels.display = false;
 
-        // 파일 업로드
-        fileInput.addEventListener('change', (e) => this.handleFileSelect(e));
+// 전역 상태
+const state = {
+    exams: [],
+    metric: 'raw',
+    classMetric: 'raw',
+    classSort: 'no',
+    charts: {}
+};
 
-        // 드래그 앤 드롭
-        const uploadSection = document.querySelector('.file-input-wrapper');
-        if (uploadSection) {
-            const prevent = (ev) => { ev.preventDefault(); ev.stopPropagation(); };
-            const setDragState = (on) => {
-                const fileLabel = uploadSection.querySelector('.file-input-label');
-                if (fileLabel) fileLabel.classList.toggle('dragover', on);
-            };
+// 과목 정의
+const subjects = [
+    { k: 'kor', n: '국어' },
+    { k: 'math', n: '수학' },
+    { k: 'eng', n: '영어' },
+    { k: 'hist', n: '한국사' },
+    { k: 'inq1', n: '탐구1' },
+    { k: 'inq2', n: '탐구2' }
+];
 
-            uploadSection.addEventListener('dragenter', (ev) => { prevent(ev); setDragState(true); });
-            uploadSection.addEventListener('dragover', (ev) => { prevent(ev); setDragState(true); });
-            uploadSection.addEventListener('dragleave', (ev) => { prevent(ev); setDragState(false); });
-            uploadSection.addEventListener('drop', (ev) => {
+// DOM 로드 완료 후 초기화
+document.addEventListener('DOMContentLoaded', function() {
+    initializeEventListeners();
+});
+
+// 이벤트 리스너 초기화
+function initializeEventListeners() {
+    const fileInput = document.getElementById('fileInput');
+    const analyzeBtn = document.getElementById('analyzeBtn');
+    const tabBtns = document.querySelectorAll('.tab-btn');
+    const uploadSection = document.querySelector('.upload-section');
+    const fileLabel = document.querySelector('.file-input-label');
+
+    // 파일 선택 이벤트
+    fileInput.addEventListener('change', (e) => {
+        const files = Array.from(e.target.files);
+        if (files.length > 0) {
+            displayFileList(files);
+            analyzeBtn.disabled = false;
+        }
+    });
+
+    // 분석 버튼 클릭
+    analyzeBtn.addEventListener('click', () => {
+        analyzeFiles();
+    });
+
+    // 탭 전환
+    tabBtns.forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            switchTab(e.target.closest('.tab-btn').dataset.tab);
+        });
+    });
+
+    // 드래그 앤 드롭 지원
+    if (uploadSection) {
+        const prevent = (ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+        };
+
+        const setDragState = (on) => {
+            if (fileLabel) fileLabel.classList.toggle('dragover', on);
+        };
+
+        ['dragover', 'drop'].forEach(evt => {
+            window.addEventListener(evt, prevent);
+        });
+
+        ['dragenter', 'dragover'].forEach(evt => {
+            uploadSection.addEventListener(evt, (ev) => {
+                prevent(ev);
+                setDragState(true);
+            });
+        });
+
+        ['dragleave', 'dragend'].forEach(evt => {
+            uploadSection.addEventListener(evt, (ev) => {
                 prevent(ev);
                 setDragState(false);
-                const files = ev.dataTransfer.files;
-                if (files.length > 0) {
-                    fileInput.files = files;
-                    this.handleFileSelect({ target: fileInput });
-                }
             });
-        }
-
-        // 버튼 이벤트
-        analyzeBtn.addEventListener('click', () => this.analyzeFiles());
-        exportCsvBtn.addEventListener('click', () => this.exportToCSV());
-        exportHtmlBtn.addEventListener('click', () => this.exportHTML());
-
-        // 탭 전환
-        document.querySelectorAll('.tab-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => this.switchTab(e));
         });
 
-        // 학생 필터
-        document.getElementById('gradeSelect').addEventListener('change', () => this.updateClassFilter());
-        document.getElementById('classSelect').addEventListener('change', () => this.updateStudentFilter());
-        document.getElementById('studentSelect').addEventListener('change', () => this.updateStudentName());
-        document.getElementById('studentNameSearch').addEventListener('input', (e) => this.searchStudentByName(e));
-
-        // 학생 상세 분석
-        document.getElementById('showStudentDetail').addEventListener('click', () => this.showStudentDetail());
-        document.getElementById('pdfClassBtn').addEventListener('click', () => this.generateClassPDF());
-
-        // 뷰 토글
-        document.getElementById('tableViewBtn').addEventListener('click', () => this.switchView('table'));
-        document.getElementById('detailViewBtn').addEventListener('click', () => this.switchView('detail'));
-
-        // 학생 검색
-        document.getElementById('studentSearch').addEventListener('input', (e) => this.filterStudentTable(e));
-    }
-
-    async handleFileSelect(e) {
-        const files = Array.from(e.target.files);
-        this.selectedFiles = files;
-
-        const fileList = document.getElementById('fileList');
-        fileList.innerHTML = '';
-        
-        if (files.length > 0) {
-            fileList.style.display = 'block';
-            files.forEach((file, index) => {
-                const fileItem = document.createElement('div');
-                fileItem.className = 'file-item';
-                fileItem.innerHTML = `
-                    <span class="file-name">${file.name}</span>
-                    <span class="file-size">(${(file.size / 1024).toFixed(2)} KB)</span>
-                    <button class="remove-file" onclick="mockExamAnalyzer.removeFile(${index})">×</button>
-                `;
-                fileList.appendChild(fileItem);
-            });
-            document.getElementById('analyzeBtn').disabled = false;
-        }
-    }
-
-    removeFile(index) {
-        const dt = new DataTransfer();
-        const files = Array.from(this.selectedFiles);
-        files.splice(index, 1);
-        files.forEach(file => dt.items.add(file));
-        
-        document.getElementById('excelFiles').files = dt.files;
-        this.selectedFiles = files;
-        this.handleFileSelect({ target: { files: dt.files } });
-
-        if (files.length === 0) {
-            document.getElementById('analyzeBtn').disabled = true;
-        }
-    }
-
-    async analyzeFiles() {
-        this.showLoading();
-        this.filesData.clear();
-
-        try {
-            for (const file of this.selectedFiles) {
-                const data = await this.parseExcelFile(file);
-                this.filesData.set(file.name, data);
+        uploadSection.addEventListener('drop', (ev) => {
+            prevent(ev);
+            setDragState(false);
+            const dropped = Array.from(ev.dataTransfer?.files || []);
+            const files = dropped.filter(f => /\.(xlsx|xls|csv|xlsm)$/i.test(f.name));
+            if (files.length > 0) {
+                displayFileList(files);
+                analyzeBtn.disabled = false;
+                // 파일 input에 반영
+                const dt = new DataTransfer();
+                files.forEach(f => dt.items.add(f));
+                fileInput.files = dt.files;
             }
-
-            // 데이터 통합
-            this.combineData();
-
-            // 결과 표시
-            this.displayResults();
-
-            // 버튼 활성화
-            document.getElementById('exportCsvBtn').disabled = false;
-            document.getElementById('exportHtmlBtn').disabled = false;
-
-            // 결과 섹션 표시
-            document.getElementById('results').style.display = 'block';
-
-            this.hideLoading();
-        } catch (error) {
-            this.hideLoading();
-            this.showError('파일 분석 중 오류가 발생했습니다: ' + error.message);
-        }
+        });
     }
 
-    async parseExcelFile(file) {
-        return new Promise((resolve, reject) => {
+    // 개인통계 셀렉트 이벤트
+    document.getElementById('indivClassSelect')?.addEventListener('change', updateIndivList);
+    document.getElementById('indivStudentSelect')?.addEventListener('change', renderIndividual);
+
+    // 학급통계 셀렉트 이벤트
+    document.getElementById('examSelectClass')?.addEventListener('change', renderClass);
+    document.getElementById('classSelect')?.addEventListener('change', renderClass);
+
+    // 전체통계 시험 선택 이벤트
+    document.getElementById('examSelectTotal')?.addEventListener('change', renderOverall);
+}
+
+// 파일 목록 표시
+function displayFileList(files) {
+    const fileList = document.getElementById('fileList');
+    fileList.innerHTML = '<h4><i class="fas fa-file-alt"></i> 선택된 파일:</h4>';
+    
+    const ul = document.createElement('ul');
+    files.forEach(file => {
+        const li = document.createElement('li');
+        li.textContent = file.name;
+        ul.appendChild(li);
+    });
+    
+    fileList.appendChild(ul);
+    fileList.style.display = 'block';
+}
+
+// 파일 분석
+async function analyzeFiles() {
+    const fileInput = document.getElementById('fileInput');
+    const files = Array.from(fileInput.files);
+    
+    if (files.length === 0) {
+        alert('파일을 선택해주세요.');
+        return;
+    }
+
+    showLoading();
+
+    try {
+        const promises = files.map(file => new Promise(resolve => {
             const reader = new FileReader();
-
-            reader.onload = (e) => {
+            reader.onload = (evt) => {
                 try {
-                    const data = new Uint8Array(e.target.result);
-                    const workbook = XLSX.read(data, { type: 'array' });
-
-                    // DATA 시트 찾기
-                    const dataSheet = workbook.Sheets['DATA'] || workbook.Sheets[workbook.SheetNames[0]];
-                    if (!dataSheet) {
-                        reject(new Error('DATA 시트를 찾을 수 없습니다.'));
-                        return;
+                    const wb = XLSX.read(evt.target.result, { type: 'array' });
+                    let targetSheetName = null;
+                    
+                    for (const name of wb.SheetNames) {
+                        const ws = wb.Sheets[name];
+                        const json = XLSX.utils.sheet_to_json(ws, { header: 1 });
+                        for (let i = 0; i < Math.min(20, json.length); i++) {
+                            const rowStr = (json[i] || []).join(' ');
+                            if (rowStr.includes('이름') && (rowStr.includes('국어') || rowStr.includes('수학'))) {
+                                targetSheetName = name;
+                                break;
+                            }
+                        }
+                        if (targetSheetName) break;
                     }
-
-                    const rawData = XLSX.utils.sheet_to_json(dataSheet, { header: 1, defval: null });
-                    const parsedData = this.parseStudentData(rawData);
-                    resolve(parsedData);
-                } catch (error) {
-                    reject(error);
+                    
+                    if (!targetSheetName) targetSheetName = wb.SheetNames[0];
+                    const jsonData = XLSX.utils.sheet_to_json(wb.Sheets[targetSheetName], { header: 1 });
+                    resolve(parseExcel(jsonData, file.name));
+                } catch (err) {
+                    console.error(err);
+                    resolve(null);
                 }
             };
-
-            reader.onerror = () => reject(new Error('파일을 읽을 수 없습니다.'));
             reader.readAsArrayBuffer(file);
-        });
-    }
-
-    parseStudentData(rawData) {
-        const students = [];
-        
-        // 3행부터 학생 데이터 (1, 2행은 헤더)
-        for (let i = 2; i < rawData.length; i++) {
-            const row = rawData[i];
-            if (!row || row.length === 0 || !row[0]) continue;
-
-            const student = {
-                grade: row[0],
-                class: row[1],
-                number: row[2],
-                name: row[3],
-                subjects: {
-                    korean: {
-                        name: '국어',
-                        raw: row[5],
-                        standard: row[6],
-                        percentile: row[7],
-                        grade: row[8]
-                    },
-                    math: {
-                        name: '수학',
-                        raw: row[10],
-                        standard: row[11],
-                        percentile: row[12],
-                        grade: row[13]
-                    },
-                    english: {
-                        name: '영어',
-                        raw: row[15],
-                        standard: row[16],
-                        percentile: row[17],
-                        grade: row[18]
-                    },
-                    inquiry1: {
-                        name: row[20] || '탐구1',
-                        raw: row[21],
-                        standard: row[22],
-                        percentile: row[23],
-                        grade: row[24]
-                    },
-                    inquiry2: {
-                        name: row[25] || '탐구2',
-                        raw: row[26],
-                        standard: row[27],
-                        percentile: row[28],
-                        grade: row[29]
-                    },
-                    inquiry3: {
-                        name: row[30] || '탐구3',
-                        raw: row[31],
-                        standard: row[32],
-                        percentile: row[33],
-                        grade: row[34]
-                    },
-                    secondLang: {
-                        name: row[35] || '제2외국어',
-                        raw: row[36],
-                        standard: row[37],
-                        percentile: row[38],
-                        grade: row[39]
-                    }
-                },
-                total: {
-                    raw: row[44],
-                    standard: row[45],
-                    percentile: row[46]
-                }
-            };
-
-            students.push(student);
-        }
-
-        return students;
-    }
-
-    combineData() {
-        const allStudents = [];
-        
-        for (const [fileName, students] of this.filesData.entries()) {
-            allStudents.push(...students);
-        }
-
-        this.combinedData = {
-            students: allStudents,
-            totalCount: allStudents.length,
-            examInfo: {
-                name: '모의고사',
-                date: new Date().toISOString().split('T')[0]
-            }
-        };
-    }
-
-    displayResults() {
-        this.displayOverviewStats();
-        this.displaySubjectAnalysis();
-        this.displayClassAnalysis();
-        this.displayStudentTable();
-        this.updateStudentFilters();
-    }
-
-    displayOverviewStats() {
-        const students = this.combinedData.students;
-
-        // 전체 통계 계산
-        const totalStudents = students.length;
-        let totalPercentile = 0;
-        let totalStandard = 0;
-        let totalRaw = 0;
-
-        students.forEach(student => {
-            if (student.total.percentile) totalPercentile += student.total.percentile;
-            if (student.total.standard) totalStandard += student.total.standard;
-            if (student.total.raw) totalRaw += student.total.raw;
-        });
-
-        document.getElementById('totalStudents').textContent = totalStudents;
-        document.getElementById('avgPercentile').textContent = (totalPercentile / totalStudents).toFixed(2);
-        document.getElementById('avgStandard').textContent = (totalStandard / totalStudents).toFixed(2);
-        document.getElementById('avgRaw').textContent = (totalRaw / totalStudents).toFixed(2);
-
-        // 학급별 백분위 분포 차트
-        this.createClassPercentileChart();
-
-        // 영역별 평균 등급 차트
-        this.createSubjectGradeChart();
-    }
-
-    createClassPercentileChart() {
-        const students = this.combinedData.students;
-        const classStat = {};
-
-        students.forEach(student => {
-            const key = `${student.class}반`;
-            if (!classStat[key]) {
-                classStat[key] = { count: 0, totalPercentile: 0 };
-            }
-            classStat[key].count++;
-            if (student.total.percentile) {
-                classStat[key].totalPercentile += student.total.percentile;
-            }
-        });
-
-        const labels = Object.keys(classStat).sort();
-        const data = labels.map(label => {
-            const stat = classStat[label];
-            return stat.count > 0 ? (stat.totalPercentile / stat.count).toFixed(2) : 0;
-        });
-
-        const ctx = document.getElementById('classPercentileChart');
-        if (window.classPercentileChart) {
-            window.classPercentileChart.destroy();
-        }
-
-        window.classPercentileChart = new Chart(ctx, {
-            type: 'bar',
-            data: {
-                labels: labels,
-                datasets: [{
-                    label: '평균 백분위',
-                    data: data,
-                    backgroundColor: 'rgba(102, 126, 234, 0.6)',
-                    borderColor: 'rgba(102, 126, 234, 1)',
-                    borderWidth: 2
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: true,
-                plugins: {
-                    legend: { display: true },
-                    datalabels: {
-                        anchor: 'end',
-                        align: 'top',
-                        formatter: (value) => value,
-                        font: { weight: 'bold' }
-                    }
-                },
-                scales: {
-                    y: { beginAtZero: true, max: 100 }
-                }
-            },
-            plugins: [ChartDataLabels]
-        });
-    }
-
-    createSubjectGradeChart() {
-        const students = this.combinedData.students;
-        const subjects = ['korean', 'math', 'english'];
-        const subjectNames = { korean: '국어', math: '수학', english: '영어' };
-        const data = {};
-
-        subjects.forEach(subj => {
-            let totalGrade = 0;
-            let count = 0;
-            students.forEach(student => {
-                if (student.subjects[subj].grade) {
-                    totalGrade += student.subjects[subj].grade;
-                    count++;
-                }
-            });
-            data[subj] = count > 0 ? (totalGrade / count).toFixed(2) : 0;
-        });
-
-        const ctx = document.getElementById('subjectGradeChart');
-        if (window.subjectGradeChart) {
-            window.subjectGradeChart.destroy();
-        }
-
-        window.subjectGradeChart = new Chart(ctx, {
-            type: 'bar',
-            data: {
-                labels: subjects.map(s => subjectNames[s]),
-                datasets: [{
-                    label: '평균 등급',
-                    data: subjects.map(s => data[s]),
-                    backgroundColor: ['#e74c3c', '#3498db', '#2ecc71'],
-                    borderWidth: 2
-                }]
-            },
-            options: {
-                responsive: true,
-                indexAxis: 'y',
-                plugins: {
-                    legend: { display: false },
-                    datalabels: {
-                        anchor: 'end',
-                        align: 'right',
-                        formatter: (value) => value,
-                        font: { weight: 'bold' }
-                    }
-                },
-                scales: {
-                    x: { beginAtZero: true, max: 9 }
-                }
-            },
-            plugins: [ChartDataLabels]
-        });
-    }
-
-    displaySubjectAnalysis() {
-        const students = this.combinedData.students;
-        const subjects = ['korean', 'math', 'english'];
-        const subjectNames = { korean: '국어', math: '수학', english: '영어' };
-
-        let html = '<div class="subject-cards">';
-
-        subjects.forEach(subj => {
-            let totalRaw = 0, totalStandard = 0, totalPercentile = 0, totalGrade = 0;
-            let count = 0;
-
-            students.forEach(student => {
-                const subject = student.subjects[subj];
-                if (subject.raw) {
-                    totalRaw += subject.raw;
-                    totalStandard += subject.standard || 0;
-                    totalPercentile += subject.percentile || 0;
-                    totalGrade += subject.grade || 0;
-                    count++;
-                }
-            });
-
-            const avgRaw = count > 0 ? (totalRaw / count).toFixed(2) : 0;
-            const avgStandard = count > 0 ? (totalStandard / count).toFixed(2) : 0;
-            const avgPercentile = count > 0 ? (totalPercentile / count).toFixed(2) : 0;
-            const avgGrade = count > 0 ? (totalGrade / count).toFixed(2) : 0;
-
-            html += `
-                <div class="subject-card">
-                    <h3>${subjectNames[subj]}</h3>
-                    <div class="subject-stat">
-                        <span class="stat-label">평균 원점수:</span>
-                        <span class="stat-value">${avgRaw}</span>
-                    </div>
-                    <div class="subject-stat">
-                        <span class="stat-label">평균 표준점수:</span>
-                        <span class="stat-value">${avgStandard}</span>
-                    </div>
-                    <div class="subject-stat">
-                        <span class="stat-label">평균 백분위:</span>
-                        <span class="stat-value">${avgPercentile}</span>
-                    </div>
-                    <div class="subject-stat">
-                        <span class="stat-label">평균 등급:</span>
-                        <span class="stat-value">${avgGrade}</span>
-                    </div>
-                </div>
-            `;
-        });
-
-        html += '</div>';
-        document.getElementById('subjectAverages').innerHTML = html;
-
-        // 과목별 비교 차트
-        this.createSubjectCompareChart();
-    }
-
-    createSubjectCompareChart() {
-        const students = this.combinedData.students;
-        const subjects = ['korean', 'math', 'english'];
-        const subjectNames = { korean: '국어', math: '수학', english: '영어' };
-        const metrics = ['raw', 'standard', 'percentile'];
-        const metricNames = { raw: '원점수', standard: '표준점수', percentile: '백분위' };
-
-        const datasets = metrics.map((metric, idx) => {
-            const colors = ['rgba(231, 76, 60, 0.6)', 'rgba(52, 152, 219, 0.6)', 'rgba(46, 204, 113, 0.6)'];
-            const data = subjects.map(subj => {
-                let total = 0, count = 0;
-                students.forEach(student => {
-                    if (student.subjects[subj][metric]) {
-                        total += student.subjects[subj][metric];
-                        count++;
-                    }
-                });
-                return count > 0 ? (total / count).toFixed(2) : 0;
-            });
-
-            return {
-                label: metricNames[metric],
-                data: data,
-                backgroundColor: colors[idx],
-                borderColor: colors[idx].replace('0.6', '1'),
-                borderWidth: 2
-            };
-        });
-
-        const ctx = document.getElementById('subjectCompareChart');
-        if (window.subjectCompareChart) {
-            window.subjectCompareChart.destroy();
-        }
-
-        window.subjectCompareChart = new Chart(ctx, {
-            type: 'bar',
-            data: {
-                labels: subjects.map(s => subjectNames[s]),
-                datasets: datasets
-            },
-            options: {
-                responsive: true,
-                plugins: {
-                    legend: { display: true }
-                }
-            }
-        });
-    }
-
-    displayClassAnalysis() {
-        const students = this.combinedData.students;
-        const classStat = {};
-
-        students.forEach(student => {
-            const key = `${student.class}반`;
-            if (!classStat[key]) {
-                classStat[key] = {
-                    count: 0,
-                    totalRaw: 0,
-                    totalStandard: 0,
-                    totalPercentile: 0
-                };
-            }
-            classStat[key].count++;
-            if (student.total.raw) classStat[key].totalRaw += student.total.raw;
-            if (student.total.standard) classStat[key].totalStandard += student.total.standard;
-            if (student.total.percentile) classStat[key].totalPercentile += student.total.percentile;
-        });
-
-        let html = '<table><thead><tr><th>학급</th><th>학생 수</th><th>평균 원점수</th><th>평균 표준점수</th><th>평균 백분위</th></tr></thead><tbody>';
-
-        Object.keys(classStat).sort().forEach(classKey => {
-            const stat = classStat[classKey];
-            const avgRaw = (stat.totalRaw / stat.count).toFixed(2);
-            const avgStandard = (stat.totalStandard / stat.count).toFixed(2);
-            const avgPercentile = (stat.totalPercentile / stat.count).toFixed(2);
-
-            html += `
-                <tr>
-                    <td>${classKey}</td>
-                    <td>${stat.count}</td>
-                    <td>${avgRaw}</td>
-                    <td>${avgStandard}</td>
-                    <td>${avgPercentile}</td>
-                </tr>
-            `;
-        });
-
-        html += '</tbody></table>';
-        document.getElementById('classAnalysis').innerHTML = html;
-
-        // 학급별 비교 차트
-        this.createClassCompareChart();
-    }
-
-    createClassCompareChart() {
-        const students = this.combinedData.students;
-        const classStat = {};
-
-        students.forEach(student => {
-            const key = `${student.class}반`;
-            if (!classStat[key]) {
-                classStat[key] = { count: 0, totalStandard: 0 };
-            }
-            classStat[key].count++;
-            if (student.total.standard) {
-                classStat[key].totalStandard += student.total.standard;
-            }
-        });
-
-        const labels = Object.keys(classStat).sort();
-        const data = labels.map(label => {
-            const stat = classStat[label];
-            return stat.count > 0 ? (stat.totalStandard / stat.count).toFixed(2) : 0;
-        });
-
-        const ctx = document.getElementById('classCompareChart');
-        if (window.classCompareChart) {
-            window.classCompareChart.destroy();
-        }
-
-        window.classCompareChart = new Chart(ctx, {
-            type: 'line',
-            data: {
-                labels: labels,
-                datasets: [{
-                    label: '평균 표준점수',
-                    data: data,
-                    fill: false,
-                    borderColor: 'rgba(102, 126, 234, 1)',
-                    backgroundColor: 'rgba(102, 126, 234, 0.6)',
-                    tension: 0.1
-                }]
-            },
-            options: {
-                responsive: true,
-                plugins: {
-                    datalabels: {
-                        anchor: 'top',
-                        align: 'top',
-                        formatter: (value) => value
-                    }
-                }
-            },
-            plugins: [ChartDataLabels]
-        });
-    }
-
-    displayStudentTable() {
-        const students = this.combinedData.students;
-
-        let html = '<table><thead><tr><th>학년</th><th>반</th><th>번호</th><th>이름</th><th>국어</th><th>수학</th><th>영어</th><th>총점</th><th>백분위</th></tr></thead><tbody>';
-
-        students.forEach(student => {
-            html += `
-                <tr>
-                    <td>${student.grade}</td>
-                    <td>${student.class}</td>
-                    <td>${student.number}</td>
-                    <td>${student.name}</td>
-                    <td>${student.subjects.korean.grade || '-'}</td>
-                    <td>${student.subjects.math.grade || '-'}</td>
-                    <td>${student.subjects.english.grade || '-'}</td>
-                    <td>${student.total.raw || '-'}</td>
-                    <td>${student.total.percentile ? student.total.percentile.toFixed(2) : '-'}</td>
-                </tr>
-            `;
-        });
-
-        html += '</tbody></table>';
-        document.getElementById('studentTable').innerHTML = html;
-    }
-
-    updateStudentFilters() {
-        const students = this.combinedData.students;
-
-        // 학년 필터
-        const grades = [...new Set(students.map(s => s.grade))].sort();
-        const gradeSelect = document.getElementById('gradeSelect');
-        gradeSelect.innerHTML = '<option value="">전체</option>';
-        grades.forEach(g => {
-            gradeSelect.innerHTML += `<option value="${g}">${g}학년</option>`;
-        });
-    }
-
-    updateClassFilter() {
-        const selectedGrade = document.getElementById('gradeSelect').value;
-        const students = this.combinedData.students;
-
-        const filtered = selectedGrade ? students.filter(s => s.grade == selectedGrade) : students;
-        const classes = [...new Set(filtered.map(s => s.class))].sort();
-
-        const classSelect = document.getElementById('classSelect');
-        classSelect.innerHTML = '<option value="">전체</option>';
-        classes.forEach(c => {
-            classSelect.innerHTML += `<option value="${c}">${c}반</option>`;
-        });
-
-        this.updateStudentFilter();
-    }
-
-    updateStudentFilter() {
-        const selectedGrade = document.getElementById('gradeSelect').value;
-        const selectedClass = document.getElementById('classSelect').value;
-        const students = this.combinedData.students;
-
-        let filtered = students;
-        if (selectedGrade) filtered = filtered.filter(s => s.grade == selectedGrade);
-        if (selectedClass) filtered = filtered.filter(s => s.class == selectedClass);
-
-        const studentSelect = document.getElementById('studentSelect');
-        studentSelect.innerHTML = '<option value="">학생 선택</option>';
-        filtered.forEach((s, idx) => {
-            studentSelect.innerHTML += `<option value="${idx}">${s.number}번 ${s.name}</option>`;
-        });
-
-        this.filteredStudents = filtered;
-        document.getElementById('showStudentDetail').disabled = true;
-    }
-
-    updateStudentName() {
-        const index = document.getElementById('studentSelect').value;
-        if (index !== '') {
-            document.getElementById('showStudentDetail').disabled = false;
-        } else {
-            document.getElementById('showStudentDetail').disabled = true;
-        }
-    }
-
-    searchStudentByName(e) {
-        const query = e.target.value.toLowerCase();
-        const students = this.combinedData.students;
-
-        const filtered = students.filter(s => s.name.toLowerCase().includes(query));
-        
-        const studentSelect = document.getElementById('studentSelect');
-        studentSelect.innerHTML = '<option value="">학생 선택</option>';
-        filtered.forEach((s, idx) => {
-            studentSelect.innerHTML += `<option value="${idx}">${s.grade}학년 ${s.class}반 ${s.number}번 ${s.name}</option>`;
-        });
-
-        this.filteredStudents = filtered;
-    }
-
-    showStudentDetail() {
-        const index = document.getElementById('studentSelect').value;
-        if (index === '') return;
-
-        const student = this.filteredStudents[index];
-        
-        let html = `
-            <div class="student-detail-card">
-                <h3>${student.grade}학년 ${student.class}반 ${student.number}번 ${student.name}</h3>
-                <div class="detail-section">
-                    <h4>주요 과목</h4>
-                    <table>
-                        <thead>
-                            <tr><th>과목</th><th>원점수</th><th>표준점수</th><th>백분위</th><th>등급</th></tr>
-                        </thead>
-                        <tbody>
-                            <tr>
-                                <td>국어</td>
-                                <td>${student.subjects.korean.raw || '-'}</td>
-                                <td>${student.subjects.korean.standard || '-'}</td>
-                                <td>${student.subjects.korean.percentile || '-'}</td>
-                                <td>${student.subjects.korean.grade || '-'}</td>
-                            </tr>
-                            <tr>
-                                <td>수학</td>
-                                <td>${student.subjects.math.raw || '-'}</td>
-                                <td>${student.subjects.math.standard || '-'}</td>
-                                <td>${student.subjects.math.percentile || '-'}</td>
-                                <td>${student.subjects.math.grade || '-'}</td>
-                            </tr>
-                            <tr>
-                                <td>영어</td>
-                                <td>${student.subjects.english.raw || '-'}</td>
-                                <td>${student.subjects.english.standard || '-'}</td>
-                                <td>${student.subjects.english.percentile || '-'}</td>
-                                <td>${student.subjects.english.grade || '-'}</td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
-                <div class="detail-section">
-                    <h4>총점</h4>
-                    <p><strong>원점수:</strong> ${student.total.raw || '-'}</p>
-                    <p><strong>표준점수:</strong> ${student.total.standard || '-'}</p>
-                    <p><strong>백분위:</strong> ${student.total.percentile ? student.total.percentile.toFixed(2) : '-'}</p>
-                </div>
-            </div>
-        `;
-
-        document.getElementById('studentDetailContent').innerHTML = html;
-        this.switchView('detail');
-    }
-
-    filterStudentTable(e) {
-        const query = e.target.value.toLowerCase();
-        const rows = document.querySelectorAll('#studentTable tbody tr');
-
-        rows.forEach(row => {
-            const text = row.textContent.toLowerCase();
-            row.style.display = text.includes(query) ? '' : 'none';
-        });
-    }
-
-    switchTab(e) {
-        const tab = e.target.dataset.tab;
-
-        document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
-        document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
-
-        e.target.classList.add('active');
-        document.getElementById(tab + '-tab').classList.add('active');
-    }
-
-    switchView(view) {
-        if (view === 'table') {
-            document.getElementById('tableView').style.display = 'block';
-            document.getElementById('detailView').style.display = 'none';
-            document.getElementById('tableViewBtn').classList.add('active');
-            document.getElementById('detailViewBtn').classList.remove('active');
-        } else {
-            document.getElementById('tableView').style.display = 'none';
-            document.getElementById('detailView').style.display = 'block';
-            document.getElementById('tableViewBtn').classList.remove('active');
-            document.getElementById('detailViewBtn').classList.add('active');
-        }
-    }
-
-    async generateClassPDF() {
-        alert('학급 전체 PDF 생성 기능은 구현 중입니다.');
-    }
-
-    exportToCSV() {
-        const students = this.combinedData.students;
-
-        const data = students.map(s => ({
-            '학년': s.grade,
-            '반': s.class,
-            '번호': s.number,
-            '이름': s.name,
-            '국어_원점수': s.subjects.korean.raw,
-            '국어_표준점수': s.subjects.korean.standard,
-            '국어_백분위': s.subjects.korean.percentile,
-            '국어_등급': s.subjects.korean.grade,
-            '수학_원점수': s.subjects.math.raw,
-            '수학_표준점수': s.subjects.math.standard,
-            '수학_백분위': s.subjects.math.percentile,
-            '수학_등급': s.subjects.math.grade,
-            '영어_원점수': s.subjects.english.raw,
-            '영어_표준점수': s.subjects.english.standard,
-            '영어_백분위': s.subjects.english.percentile,
-            '영어_등급': s.subjects.english.grade,
-            '총점_원점수': s.total.raw,
-            '총점_표준점수': s.total.standard,
-            '총점_백분위': s.total.percentile
         }));
 
-        const ws = XLSX.utils.json_to_sheet(data);
-        const wb = XLSX.utils.book_new();
-        XLSX.utils.book_append_sheet(wb, ws, '성적데이터');
+        const results = await Promise.all(promises);
+        state.exams = results
+            .filter(r => r && r.students.length > 0)
+            .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
 
-        const date = new Date().toISOString().split('T')[0];
-        XLSX.writeFile(wb, `모의고사_성적분석_${date}.xlsx`);
-    }
-
-    exportHTML() {
-        const htmlContent = document.documentElement.outerHTML;
-        const blob = new Blob([htmlContent], { type: 'text/html' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        const date = new Date().toISOString().split('T')[0];
-        a.download = `모의고사_성적분석_${date}.html`;
-        a.click();
-        URL.revokeObjectURL(url);
-    }
-
-    showLoading() {
-        document.getElementById('loading').style.display = 'flex';
-    }
-
-    hideLoading() {
-        document.getElementById('loading').style.display = 'none';
-    }
-
-    showError(message) {
-        const errorDiv = document.getElementById('error');
-        errorDiv.textContent = message;
-        errorDiv.style.display = 'block';
-        setTimeout(() => {
-            errorDiv.style.display = 'none';
-        }, 5000);
+        if (state.exams.length) {
+            hideLoading();
+            document.getElementById('uploadSection').style.display = 'none';
+            document.getElementById('results').style.display = 'block';
+            initSelectors();
+        } else {
+            hideLoading();
+            alert('데이터를 찾을 수 없습니다.');
+        }
+    } catch (error) {
+        hideLoading();
+        alert('파일 분석 중 오류가 발생했습니다: ' + error.message);
     }
 }
 
-// 인스턴스 생성
-const mockExamAnalyzer = new MockExamAnalyzer();
+// 엑셀 파싱
+function parseExcel(rows, fname) {
+    let startRow = -1;
+    for (let i = 0; i < rows.length; i++) {
+        if (!rows[i]) continue;
+        const rowStr = rows[i].map(c => String(c).replace(/\s/g, '')).join(',');
+        if (rowStr.includes('이름') && rowStr.includes('번호')) {
+            startRow = i;
+            break;
+        }
+    }
+    if (startRow === -1) return null;
+
+    const students = [];
+    const val = (r, i) => Number(r[i]) || 0;
+    const grd = (r, i) => { const v = Number(r[i]); return (v > 0 && v < 10) ? v : 9; };
+    const str = (r, i) => r[i] || '-';
+
+    for (let i = startRow + 1; i < rows.length; i++) {
+        const r = rows[i];
+        if (!r || !r[4]) continue;
+
+        const s = {
+            info: { grade: parseInt(r[1]), class: parseInt(r[2]), no: parseInt(r[3]), name: r[4] },
+            hist: { raw: val(r, 5), grd: grd(r, 6), std: 0, pct: 0 },
+            kor: { raw: val(r, 8), std: val(r, 9), pct: val(r, 10), grd: grd(r, 11) },
+            math: { raw: val(r, 13), std: val(r, 14), pct: val(r, 15), grd: grd(r, 16) },
+            eng: { raw: val(r, 17), grd: grd(r, 18), std: 0, pct: 0 },
+            inq1: { name: str(r, 19), raw: val(r, 20), std: val(r, 21), pct: val(r, 22), grd: grd(r, 23) },
+            inq2: { name: str(r, 24), raw: val(r, 25), std: val(r, 26), pct: val(r, 27), grd: grd(r, 28) },
+            uid: `${parseInt(r[2])}-${parseInt(r[3])}-${r[4]}`
+        };
+
+        s.totalRaw = s.kor.raw + s.math.raw + s.eng.raw + s.inq1.raw + s.inq2.raw + s.hist.raw;
+        s.totalStd = s.kor.std + s.math.std + s.inq1.std + s.inq2.std;
+        s.totalPct = parseFloat((s.kor.pct + s.math.pct + s.inq1.pct + s.inq2.pct).toFixed(2));
+
+        students.push(s);
+    }
+
+    students.sort((a, b) => b.totalRaw - a.totalRaw);
+    students.forEach((s, idx) => { s.totalRank = idx + 1; });
+
+    return { name: fname.replace(/\.[^/.]+$/, ""), students };
+}
+
+// 셀렉터 초기화
+function initSelectors() {
+    const opts = state.exams.map((e, i) => `<option value="${i}">${e.name}</option>`).join('');
+    document.getElementById('examSelectTotal').innerHTML = opts;
+    document.getElementById('examSelectClass').innerHTML = opts;
+
+    const classes = [...new Set(state.exams[0].students.map(s => s.info.class))].sort((a, b) => a - b);
+    const cOpts = classes.map(c => `<option value="${c}">${c}반</option>`).join('');
+
+    document.getElementById('classSelect').innerHTML = cOpts;
+    document.getElementById('indivClassSelect').innerHTML = cOpts;
+    document.getElementById('classSelect').value = classes[0];
+    document.getElementById('indivClassSelect').value = classes[0];
+
+    switchTab('overall');
+    renderOverall();
+    renderClass();
+    updateIndivList();
+}
+
+// 탭 전환
+function switchTab(t) {
+    document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+    document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+
+    document.getElementById(t + '-tab').classList.add('active');
+    document.querySelector(`.tab-btn[data-tab="${t}"]`).classList.add('active');
+
+    if (t === 'overall' && state.charts.bubble) state.charts.bubble.resize();
+}
+
+// 로딩 표시
+function showLoading() {
+    document.getElementById('loading').style.display = 'flex';
+}
+
+function hideLoading() {
+    document.getElementById('loading').style.display = 'none';
+}
+
+// ===== 전체통계 =====
+function renderOverall() {
+    const examIdx = document.getElementById('examSelectTotal').value;
+    const students = state.exams[examIdx].students;
+    const metric = state.metric;
+
+    // 버블 차트 데이터
+    const bubbleData = [];
+    const classes = [...new Set(students.map(s => s.info.class))].sort((a, b) => a - b);
+    const maxClass = Math.max(...classes) || 12;
+
+    classes.forEach(c => {
+        const clsStudents = students.filter(s => s.info.class == c);
+        clsStudents.sort((a, b) => b.totalRaw - a.totalRaw);
+        const count = clsStudents.length;
+
+        clsStudents.forEach((s, idx) => {
+            const ratio = idx / (count - 1 || 1);
+            const r = ratio < 0.5 ? Math.floor(255 * (ratio * 2)) : 255;
+            const g = ratio < 0.5 ? 255 : Math.floor(255 * (2 - ratio * 2));
+
+            let score = 0;
+            if (metric === 'raw') score = s.totalRaw;
+            else if (metric === 'std') score = s.totalStd;
+            else score = s.totalPct;
+
+            bubbleData.push({
+                x: Number(c),
+                y: score,
+                r: 8,
+                bg: `rgba(${r}, ${g}, 0, 0.8)`,
+                name: s.info.name
+            });
+        });
+    });
+
+    // 버블 차트 렌더링
+    if (state.charts.bubble) state.charts.bubble.destroy();
+    state.charts.bubble = new Chart(document.getElementById('bubbleChart'), {
+        type: 'bubble',
+        data: {
+            datasets: [{
+                data: bubbleData,
+                backgroundColor: bubbleData.map(d => d.bg),
+                borderColor: 'transparent'
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                x: {
+                    title: { display: true, text: '학급' },
+                    min: 0,
+                    max: maxClass + 1,
+                    ticks: {
+                        stepSize: 1,
+                        callback: function(value) {
+                            return (value >= 1 && value <= maxClass && Number.isInteger(value)) ? value + "반" : "";
+                        }
+                    }
+                },
+                y: {
+                    title: { display: true, text: metric === 'raw' ? '원점수 합' : (metric === 'std' ? '표준점수 합' : '백분위 합') }
+                }
+            },
+            plugins: {
+                legend: { display: false },
+                datalabels: { display: false },
+                tooltip: {
+                    callbacks: {
+                        label: (c) => `${c.raw.x}반 ${c.raw.name}: ${c.raw.y.toFixed(1)}`
+                    }
+                }
+            }
+        }
+    });
+
+    // 과목별 통계 카드
+    const container = document.getElementById('combinedStatsContainer');
+    container.innerHTML = '';
+
+    subjects.forEach(sub => {
+        const scores = students.map(s => (sub.k.includes('inq') || sub.k.includes('eng') || sub.k.includes('hist')) ? s[sub.k].raw : s[sub.k][metric] || 0).filter(v => v > 0);
+        const avg = scores.length ? (scores.reduce((a, b) => a + b, 0) / scores.length).toFixed(1) : '-';
+        const max = scores.length ? Math.max(...scores) : '-';
+        const mean = parseFloat(avg);
+        const std = scores.length ? Math.sqrt(scores.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / scores.length).toFixed(1) : '-';
+
+        const counts = Array(9).fill(0);
+        students.forEach(s => { if (s[sub.k].grd) counts[s[sub.k].grd - 1]++; });
+
+        const card = document.createElement('div');
+        card.className = 'subject-card';
+        card.innerHTML = `
+            <h4><span>${sub.n}</span><span class="count-badge">응시 ${scores.length}명</span></h4>
+            <table class="mini-stat-table">
+                <thead><tr><th>평균</th><th>표편</th><th>최고</th></tr></thead>
+                <tbody><tr><td class="avg">${avg}</td><td>${std}</td><td>${max}</td></tr></tbody>
+            </table>
+            <div class="subject-chart"><canvas id="chart-${sub.k}"></canvas></div>
+        `;
+        container.appendChild(card);
+
+        setTimeout(() => {
+            new Chart(document.getElementById(`chart-${sub.k}`), {
+                type: 'bar',
+                data: {
+                    labels: ['1등급', '2등급', '3등급', '4등급', '5등급', '6등급', '7등급', '8등급', '9등급'],
+                    datasets: [{
+                        data: counts,
+                        backgroundColor: ['#ff0000', '#ff8c00', '#ffd700', '#32cd32', '#0000ff', '#4b0082', '#800080', '#a9a9a9', '#d3d3d3'],
+                        borderRadius: 3
+                    }]
+                },
+                options: {
+                    indexAxis: 'y',
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false },
+                        datalabels: { display: true, color: 'black', anchor: 'center', align: 'center', font: { size: 10, weight: 'bold' } }
+                    },
+                    scales: { x: { display: false, beginAtZero: true }, y: { grid: { display: false } } }
+                }
+            });
+        }, 0);
+    });
+
+    // 성적 일람표
+    const tbody = document.getElementById('totalTableBody');
+    tbody.innerHTML = '';
+    const getVal = (s, k) => (k == 'eng' || k == 'hist') ? s[k].raw : (metric == 'raw' ? s[k].raw : (s[k][metric] || '-'));
+    const getTot = (s) => metric === 'raw' ? s.totalRaw : (metric === 'std' ? s.totalStd.toFixed(1) : s.totalPct.toFixed(1));
+
+    students.slice(0, 500).forEach(s => {
+        const studentId = `${s.info.grade}${String(s.info.class).padStart(2, '0')}${String(s.info.no).padStart(2, '0')}`;
+        tbody.innerHTML += `
+            <tr>
+                <td style="font-weight:bold;color:var(--primary);">${s.totalRank}</td>
+                <td style="font-family:monospace;color:var(--text-muted);">${studentId}</td>
+                <td style="font-weight:bold;">${s.info.name}</td>
+                <td>${getVal(s, 'kor')}</td><td class="g-${s.kor.grd}">${s.kor.grd}</td>
+                <td>${getVal(s, 'math')}</td><td class="g-${s.math.grd}">${s.math.grd}</td>
+                <td>${getVal(s, 'eng')}</td><td class="g-${s.eng.grd}">${s.eng.grd}</td>
+                <td>${getVal(s, 'hist')}</td><td class="g-${s.hist.grd}">${s.hist.grd}</td>
+                <td>${getVal(s, 'inq1')}</td><td class="g-${s.inq1.grd}">${s.inq1.grd}</td>
+                <td>${getVal(s, 'inq2')}</td><td class="g-${s.inq2.grd}">${s.inq2.grd}</td>
+                <td class="total-col">${getTot(s)}</td>
+            </tr>
+        `;
+    });
+}
+
+// 메트릭 변경
+function changeMetric(m) {
+    state.metric = m;
+    document.querySelectorAll('#overall-tab .opt-btn').forEach(b => b.classList.remove('active'));
+    document.getElementById('btn-' + m).classList.add('active');
+    renderOverall();
+}
+
+// ===== 학급통계 =====
+function renderClass() {
+    const examIdx = document.getElementById('examSelectClass').value;
+    const cls = parseInt(document.getElementById('classSelect').value);
+    const metric = state.classMetric;
+
+    let students = state.exams[examIdx].students.filter(s => s.info.class === cls);
+    const getTot = (s) => metric === 'raw' ? s.totalRaw : (metric === 'std' ? s.totalStd.toFixed(1) : s.totalPct.toFixed(1));
+
+    if (state.classSort === 'total') students.sort((a, b) => parseFloat(getTot(b)) - parseFloat(getTot(a)));
+    else students.sort((a, b) => a.info.no - b.info.no);
+
+    const tbody = document.getElementById('classTableBody');
+    tbody.innerHTML = '';
+    const getVal = (s, k) => (k == 'eng' || k == 'hist') ? s[k].raw : (metric == 'raw' ? s[k].raw : (s[k][metric] || '-'));
+
+    students.forEach(s => {
+        const rank = students.filter(st => parseFloat(getTot(st)) > parseFloat(getTot(s))).length + 1;
+        let html = `<tr><td>${s.info.no}</td><td style="font-weight:bold;">${s.info.name}</td>`;
+        ['kor', 'math', 'eng', 'hist', 'inq1', 'inq2'].forEach(k => {
+            html += `<td>${getVal(s, k)}</td><td class="g-${s[k].grd}">${s[k].grd}</td>`;
+        });
+        html += `<td class="total-col">${getTot(s)}</td><td class="total-col">${rank}</td></tr>`;
+        tbody.innerHTML += html;
+    });
+}
+
+function changeClassMetric(m) {
+    state.classMetric = m;
+    document.querySelectorAll('#class-tab .opt-btn').forEach(b => b.classList.remove('active'));
+    document.getElementById('btn-c-' + m).classList.add('active');
+    renderClass();
+}
+
+function sortClass(t) {
+    state.classSort = t;
+    document.getElementById('btn-sort-total').classList.remove('active');
+    document.getElementById('btn-sort-no').classList.remove('active');
+    document.getElementById('btn-sort-' + t).classList.add('active');
+    renderClass();
+}
+
+// ===== 개인통계 =====
+function updateIndivList() {
+    const cls = parseInt(document.getElementById('indivClassSelect').value);
+    const latest = state.exams[state.exams.length - 1];
+    const list = latest.students.filter(s => s.info.class === cls).sort((a, b) => a.info.no - b.info.no);
+    const sel = document.getElementById('indivStudentSelect');
+    sel.innerHTML = list.map(s => `<option value="${s.uid}">${s.info.no}번 ${s.info.name}</option>`).join('');
+    if (list.length > 0) renderIndividual();
+}
+
+function renderIndividual() {
+    const uid = document.getElementById('indivStudentSelect').value;
+    const history = [];
+    state.exams.forEach(ex => {
+        const s = ex.students.find(st => st.uid === uid);
+        if (s) history.push({ name: ex.name, data: s });
+    });
+    if (!history.length) return;
+
+    const latest = history[history.length - 1];
+    const latestData = latest.data;
+
+    document.getElementById('indivName').innerText = latestData.info.name;
+    document.getElementById('indivInfo').innerText = `${latestData.info.grade}학년 ${latestData.info.class}반 ${latestData.info.no}번`;
+    document.getElementById('latestExamName').innerText = "최근 시험: " + latest.name;
+
+    document.getElementById('indivTotalRaw').innerText = latestData.totalRaw;
+    document.getElementById('indivTotalStd').innerText = latestData.totalStd.toFixed(1);
+    document.getElementById('indivTotalPct').innerText = latestData.totalPct.toFixed(2);
+    document.getElementById('indivRank').innerText = latestData.totalRank;
+
+    // 총점 추이 차트
+    drawChart('totalTrendChart', 'line', {
+        labels: history.map(h => h.name),
+        datasets: [{
+            label: '총점(백분위합)',
+            data: history.map(h => h.data.totalPct),
+            borderColor: '#9333ea',
+            backgroundColor: '#9333ea',
+            tension: 0.3
+        }]
+    }, {
+        scales: { y: { min: 0, title: { display: true, text: '백분위합' } } },
+        plugins: { datalabels: { display: true, color: '#9333ea', align: 'top', formatter: (v) => v.toFixed(2) } }
+    });
+
+    // 과목별 상세
+    const container = document.getElementById('subjectDetailContainer');
+    container.innerHTML = '';
+
+    subjects.forEach(sub => {
+        const k = sub.k;
+        const isAbs = (k === 'eng' || k === 'hist');
+        let thead = `<tr><th style="width:60px;background:var(--neutral-100);">구분</th>`;
+        history.forEach(h => thead += `<th style="background:var(--neutral-100);font-size:0.8rem;">${h.name}</th>`);
+        thead += `</tr>`;
+
+        let trRaw = `<tr><td style="font-weight:600;color:var(--text-muted);">원점수</td>`;
+        let trGrd = `<tr><td style="font-weight:600;color:var(--text-muted);">등급</td>`;
+        let trPct = `<tr><td style="font-weight:600;color:var(--text-muted);">백분위</td>`;
+
+        history.forEach(h => {
+            const d = h.data[k];
+            trRaw += `<td>${d.raw}</td>`;
+            trGrd += `<td class="g-${d.grd}">${d.grd}</td>`;
+            trPct += `<td>${d.pct || '-'}</td>`;
+        });
+        trRaw += `</tr>`; trGrd += `</tr>`; trPct += `</tr>`;
+
+        const chartId = `chart-${k}-${uid.replace(/[^a-zA-Z0-9]/g, '')}`;
+        const card = document.createElement('div');
+        card.className = 'subject-detail-card';
+        card.innerHTML = `
+            <h4><span>${sub.n}</span><span class="subject-name-badge">${latestData[k].name || ''}</span></h4>
+            <div class="subject-detail-grid">
+                <div class="subject-detail-chart"><canvas id="${chartId}"></canvas></div>
+                <div class="subject-detail-table">
+                    <table class="data-table" style="font-size:0.8rem;">
+                        <thead>${thead}</thead>
+                        <tbody>${trGrd}${trRaw}${!isAbs ? trPct : ''}</tbody>
+                    </table>
+                </div>
+            </div>
+        `;
+        container.appendChild(card);
+
+        setTimeout(() => {
+            const ctx = document.getElementById(chartId);
+            if (!ctx) return;
+            const yVals = history.map(h => isAbs ? h.data[k].grd : h.data[k].pct);
+            const yMax = isAbs ? 9 : 120;
+
+            new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: history.map(h => h.name),
+                    datasets: [{
+                        label: isAbs ? '등급' : '백분위',
+                        data: yVals,
+                        borderColor: isAbs ? '#f59e0b' : '#3b82f6',
+                        tension: 0.1,
+                        borderWidth: 2,
+                        pointRadius: 4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false },
+                        datalabels: {
+                            display: true,
+                            color: isAbs ? '#d97706' : '#2563eb',
+                            align: 'top',
+                            formatter: (v) => v > 100 ? '' : v
+                        }
+                    },
+                    scales: {
+                        y: {
+                            reverse: isAbs,
+                            min: 0,
+                            max: yMax,
+                            ticks: {
+                                stepSize: isAbs ? 1 : 20,
+                                callback: function(val) { return val > 100 ? '' : val; }
+                            }
+                        }
+                    }
+                }
+            });
+        }, 0);
+    });
+}
+
+// 차트 그리기 헬퍼
+function drawChart(id, type, data, options) {
+    if (state.charts[id]) state.charts[id].destroy();
+    const ctx = document.getElementById(id).getContext('2d');
+    state.charts[id] = new Chart(ctx, { type, data, options });
+}
