@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>고등학교 모의고사 성적 분석 프로그램 Web</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>📊 고등학교 모의고사 성적 분석 프로그램</h1>
+            <p class="subtitle">데이터 기반 성적 분석 시스템</p>
+        </header>
+
+        <section class="info-section">
+            <div class="info-card">
+                <h3>📋 모의고사 성적 엑셀 파일 업로드 방법</h3>
+                <p>엑셀 파일은 <strong>DATA</strong> 시트에 다음 형식으로 작성되어야 합니다:</p>
+                <ul>
+                    <li><strong>1행:</strong> 영역명 (학년, 반, 번호, 이름, 국어영역, 수학영역, 영어영역, 탐구1과목, 탐구2과목, 탐구3과목, 제2외국어, 총계)</li>
+                    <li><strong>2행:</strong> 세부항목 (과목, 원점수, 표준점수, 백분위, 등급)</li>
+                    <li><strong>3행 이후:</strong> 학생 성적 데이터</li>
+                </ul>
+                <p class="warning">⚠️ 주의: XLSX 또는 XLSM 파일만 업로드 가능합니다.</p>
+            </div>
+
+            <div class="info-card security-card">
+                <h3>🔒 보안 안내</h3>
+                <ul>
+                    <li>업로드한 성적 파일은 <strong>서버에 전송/저장되지 않습니다</strong>.</li>
+                    <li>모든 분석은 <strong>사용자의 브라우저(로컬)</strong>에서만 수행됩니다.</li>
+                    <li>페이지를 닫거나 새로고침하면 메모리에 남은 데이터는 사라집니다.</li>
+                </ul>
+                <p class="security-note">즉, 업로드한 양식은 외부로 유출되지 않습니다 🙂</p>
+            </div>
+        </section>
+
+        <section class="upload-section">
+            <div class="upload-card">
+                <h3>엑셀 파일 업로드 (여러 파일 가능)</h3>
+                <div class="upload-area" id="uploadArea">
+                    <input type="file" id="fileInput" accept=".xlsx,.xlsm" multiple style="display: none;">
+                    <div class="upload-placeholder">
+                        <p>📁 클릭 또는 드래그로 업로드</p>
+                    </div>
+                </div>
+                <div id="fileList" class="file-list"></div>
+                <div class="button-group">
+                    <button id="analyzeBtn" class="btn btn-primary" disabled>분석 시작</button>
+                    <button id="exportBtn" class="btn btn-secondary" disabled>통합 데이터 내보내기</button>
+                    <button id="saveHtmlBtn" class="btn btn-secondary" disabled>분석결과 HTML 저장</button>
+                </div>
+            </div>
+        </section>
+
+        <section class="tabs-section" id="tabsSection" style="display: none;">
+            <div class="tabs">
+                <button class="tab active" data-tab="overall">전체 통계</button>
+                <button class="tab" data-tab="subject">과목별 분석</button>
+                <button class="tab" data-tab="class">학급별 분석</button>
+                <button class="tab" data-tab="student">학생별 분석</button>
+            </div>
+
+            <div class="tab-content">
+                <div id="overall" class="tab-pane active">
+                    <h2>전체 통계</h2>
+                    <div class="stats-grid">
+                        <div class="stat-card">
+                            <div class="stat-label">전체 학생 수</div>
+                            <div class="stat-value" id="totalStudents">-</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">평균 백분위</div>
+                            <div class="stat-value" id="avgPercentile">-</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">평균 표준점수</div>
+                            <div class="stat-value" id="avgStandard">-</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">평균 원점수</div>
+                            <div class="stat-value" id="avgRaw">-</div>
+                        </div>
+                    </div>
+                    <div id="overallCharts" class="charts-container"></div>
+                </div>
+
+                <div id="subject" class="tab-pane">
+                    <h2>과목별 분석</h2>
+                    <div id="subjectCharts" class="charts-container"></div>
+                </div>
+
+                <div id="class" class="tab-pane">
+                    <h2>학급별 분석</h2>
+                    <div id="classCharts" class="charts-container"></div>
+                </div>
+
+                <div id="student" class="tab-pane">
+                    <h2>학생별 분석</h2>
+                    <div class="filter-card">
+                        <div class="filter-group">
+                            <label>학년:</label>
+                            <select id="gradeFilter">
+                                <option value="">전체</option>
+                            </select>
+                        </div>
+                        <div class="filter-group">
+                            <label>반:</label>
+                            <select id="classFilter">
+                                <option value="">전체</option>
+                            </select>
+                        </div>
+                        <div class="filter-group">
+                            <label>번호:</label>
+                            <select id="numberFilter">
+                                <option value="">학생 선택</option>
+                            </select>
+                        </div>
+                        <div class="filter-group">
+                            <label>이름:</label>
+                            <input type="text" id="nameDisplay" readonly>
+                        </div>
+                    </div>
+                    <div class="button-group">
+                        <button id="analyzeStudentBtn" class="btn btn-primary" disabled>상세 분석</button>
+                        <button id="classAllPdfBtn" class="btn btn-secondary" disabled>학급 전체 PDF</button>
+                    </div>
+                    <div class="student-tabs">
+                        <button class="student-tab active" data-tab="table">전체 테이블</button>
+                        <button class="student-tab" data-tab="detail">개인 상세</button>
+                    </div>
+                    <div id="studentTable" class="student-content active"></div>
+                    <div id="studentDetail" class="student-content"></div>
+                </div>
+            </div>
+        </section>
+
+        <div id="loadingOverlay" class="loading-overlay">
+            <div class="loading-spinner"></div>
+            <p>분석 중...</p>
+        </div>
+    </div>
+
+    <footer>
+        <p>Based on 전주고등학교 모의고사 성적 분석 시스템</p>
+    </footer>
+
+    <script src="script.js"></script>
+</body>
+</html>
