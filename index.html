@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>2025 전주고 모의고사 성적분석</title>
+    <link rel="stylesheet" href="style.css">
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2"></script>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    
+    <link rel="stylesheet" as="style" crossorigin href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css" />
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1><i class="fas fa-chart-pie"></i> 2025 전주고 모의고사 성적분석 <span class="badge-lite">V13</span></h1>
+            <p>대교협 양식 파일을 업로드하여 모의고사 성적을 분석합니다</p>
+        </header>
+
+        <div class="upload-section" id="uploadSection">
+            <div class="upload-guide">
+                <p><strong><i class="fas fa-info-circle"></i> 파일 업로드 방법:</strong></p>
+                <p><strong>대교협 양식</strong>의 모의고사 성적 파일(xlsx, xls, csv, xlsm)을 업로드하세요.</p>
+                <p class="warning-text"><strong>⚠️ 여러 파일을 동시에 선택하여 업로드할 수 있습니다.</strong></p>
+                <div class="privacy-notice">
+                    <p>🔒 보안 안내</p>
+                    <ul>
+                        <li>업로드한 성적 파일은 <strong>서버에 전송/저장되지 않습니다</strong>.</li>
+                        <li>모든 분석은 <strong>사용자의 브라우저(로컬)</strong>에서만 수행됩니다.</li>
+                        <li>페이지를 닫거나 새로고침하면 메모리에 남은 데이터는 사라집니다.</li>
+                    </ul>
+                    <p class="privacy-footnote">즉, 업로드한 양식은 외부로 유출되지 않습니다 🙂</p>
+                </div>
+            </div>
+            <div class="section-divider"></div>
+            <div class="file-input-wrapper">
+                <input type="file" id="fileInput" multiple accept=".xlsx, .xls, .csv, .xlsm" />
+                <label for="fileInput" class="file-input-label">
+                    <i class="fas fa-cloud-upload-alt"></i>
+                    <span>파일 업로드 (여러 파일 가능)</span>
+                </label>
+                <div class="upload-hint">클릭 또는 드래그로 업로드</div>
+            </div>
+            <div id="fileList" class="file-list" style="display: none;"></div>
+            <div class="action-buttons">
+                <button id="analyzeBtn" class="analyze-btn" disabled>
+                    <i class="fas fa-search"></i> 분석 시작
+                </button>
+                <button id="saveHtmlBtn" class="save-html-btn" style="display: none;">
+                    <i class="fas fa-file-code"></i> 분석결과 HTML 저장
+                </button>
+            </div>
+        </div>
+
+        <div id="loading" class="loading" style="display: none;">
+            <div class="spinner"></div>
+            <p id="loadingText">분석 중...</p>
+        </div>
+
+        <div id="results" class="results-section" style="display: none;">
+            <div class="tabs">
+                <button class="tab-btn active" data-tab="overall"><i class="fas fa-chart-bar"></i> 전체통계</button>
+                <button class="tab-btn" data-tab="class"><i class="fas fa-users"></i> 학급통계</button>
+                <button class="tab-btn" data-tab="individual"><i class="fas fa-user"></i> 개인통계</button>
+            </div>
+
+            <div id="overall-tab" class="tab-content active">
+                <div class="control-panel">
+                    <div class="control-left">
+                        <label class="control-label"><i class="fas fa-clipboard-list"></i> 시험 선택:</label>
+                        <select id="examSelectTotal" class="selector"></select>
+                    </div>
+                    <div class="control-right">
+                        <span class="metric-label">Metric</span>
+                        <button onclick="changeMetric('raw')" id="btn-raw" class="opt-btn active">원점수</button>
+                        <button onclick="changeMetric('std')" id="btn-std" class="opt-btn">표준점수</button>
+                        <button onclick="changeMetric('pct')" id="btn-pct" class="opt-btn">백분위</button>
+                    </div>
+                </div>
+
+                <div class="chart-card">
+                    <h3><i class="fas fa-braille"></i> 반별 성적 분포</h3>
+                    <div class="chart-container"><canvas id="bubbleChart"></canvas></div>
+                </div>
+
+                <h3 class="section-title"><i class="fas fa-th-large"></i> 과목별 종합 분석 (등급분포)</h3>
+                <div id="combinedStatsContainer" class="subject-grid"></div>
+
+                <div class="chart-card">
+                    <h3><i class="fas fa-list-ol"></i> 전체 성적 일람표 (총점순)</h3>
+                    <div class="table-wrapper">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th rowspan="2">석차</th>
+                                    <th rowspan="2">학번</th>
+                                    <th rowspan="2">이름</th>
+                                    <th colspan="2">국어</th><th colspan="2">수학</th><th colspan="2">영어</th>
+                                    <th colspan="2">한국사</th><th colspan="2">탐구1</th><th colspan="2">탐구2</th>
+                                    <th rowspan="2" class="total-col">총점</th>
+                                </tr>
+                                <tr>
+                                    <th>점수</th><th>등급</th><th>점수</th><th>등급</th><th>점수</th><th>등급</th>
+                                    <th>점수</th><th>등급</th><th>점수</th><th>등급</th><th>점수</th><th>등급</th>
+                                </tr>
+                            </thead>
+                            <tbody id="totalTableBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <div id="class-tab" class="tab-content">
+                <div class="control-panel">
+                    <div class="control-left">
+                        <select id="examSelectClass" class="selector"></select>
+                        <select id="classSelect" class="selector"></select>
+                    </div>
+                    <div class="control-right">
+                        <button onclick="changeClassMetric('raw')" id="btn-c-raw" class="opt-btn active">원점수</button>
+                        <button onclick="changeClassMetric('std')" id="btn-c-std" class="opt-btn">표준점수</button>
+                        <button onclick="changeClassMetric('pct')" id="btn-c-pct" class="opt-btn">백분위</button>
+                        <span class="divider"></span>
+                        <button onclick="sortClass('total')" id="btn-sort-total" class="opt-btn"><i class="fas fa-sort-amount-down"></i> 총점</button>
+                        <button onclick="sortClass('no')" id="btn-sort-no" class="opt-btn active"><i class="fas fa-sort-numeric-down"></i> 번호</button>
+                    </div>
+                </div>
+
+                <h3 class="section-title"><i class="fas fa-th-large"></i> 학급 과목별 종합 분석 (등급분포)</h3>
+                <div id="classStatsContainer" class="subject-grid"></div>
+
+                <div class="chart-card">
+                    <h3><i class="fas fa-list-ol"></i> 학급 성적 일람표</h3>
+                    <div class="table-wrapper">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>번호</th><th>이름</th>
+                                    <th>국어</th><th>등급</th><th>수학</th><th>등급</th><th>영어</th><th>등급</th>
+                                    <th>한국사</th><th>등급</th><th>탐구1</th><th>등급</th><th>탐구2</th><th>등급</th>
+                                    <th class="total-col">총점</th><th class="total-col">석차</th>
+                                </tr>
+                            </thead>
+                            <tbody id="classTableBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <div id="individual-tab" class="tab-content">
+                <div class="control-panel non-printable">
+                    <div class="control-left">
+                        <label class="control-label">학급:</label>
+                        <select id="indivClassSelect" class="selector"></select>
+                        <label class="control-label">학생:</label>
+                        <select id="indivStudentSelect" class="selector student-select"></select>
+                        <span class="divider"></span>
+                        <label class="control-label">시험 선택:</label>
+                        <select id="indivExamSelect" class="selector"></select>
+                    </div>
+                    <div class="control-right">
+                        <button id="pdfStudentBtn" class="pdf-btn"><i class="fas fa-file-pdf"></i> 개인 성적표 PDF</button>
+                        <button id="pdfClassBtn" class="pdf-btn"><i class="fas fa-file-pdf"></i> 학급 전체 PDF</button>
+                    </div>
+                </div>
+
+                <div class="student-profile-card">
+                    <div class="profile-header">
+                        <div class="profile-info">
+                            <h2 id="indivName">-</h2>
+                            <p id="indivInfo">-</p>
+                        </div>
+                        <div class="profile-badge">
+                            <span id="latestExamName">-</span>
+                        </div>
+                    </div>
+                    <div class="profile-stats">
+                        <div class="stat-box">
+                            <span class="stat-label">모의고사 평균등급</span>
+                            <span class="stat-value purple" id="indivAverageGrade">-</span>
+                        </div>
+                        <div class="stat-box">
+                            <span class="stat-label">원점수 총점</span>
+                            <span class="stat-value" id="indivTotalRaw">-</span>
+                        </div>
+                        <div class="stat-box">
+                            <span class="stat-label">표준점수 총점</span>
+                            <span class="stat-value blue" id="indivTotalStd">-</span>
+                        </div>
+                        <div class="stat-box">
+                            <span class="stat-label">백분위 총점</span>
+                            <span class="stat-value green" id="indivTotalPct">-</span>
+                        </div>
+                        <div class="stat-box">
+                            <span class="stat-label">전교 석차</span>
+                            <span class="stat-value purple" id="indivRank">-</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="charts-row">
+                    <div class="chart-card chart-half">
+                        <h3><i class="fas fa-chart-line"></i> 총점(백분위 합) 추이</h3>
+                        <div class="chart-container"><canvas id="totalTrendChart"></canvas></div>
+                    </div>
+                    <div class="chart-card chart-half">
+                        <h3><i class="fas fa-chart-radar"></i> 회차별 과목 등급</h3>
+                        <div class="chart-container" style="display: flex; justify-content: center; align-items: center; width: 100%;">
+                            <canvas id="radarChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="subjectDetailContainer"></div>
+            </div>
+        </div>
+
+        <footer class="app-footer non-printable">
+            <div class="footer-left">
+                <span id="lastUpdated" class="last-updated"></span>
+            </div>
+            <div class="footer-right">
+                <div class="credits">2025 전주고 모의고사 성적분석 V13</div>
+            </div>
+        </footer>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
